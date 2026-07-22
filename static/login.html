@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ru" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Вход — Twitch Farmer</title>
+<script src="/static/theme.js"></script>
+<link rel="stylesheet" href="/static/style.css" />
+<link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 240'><rect width='240' height='240' rx='52' fill='%239146FF'/><path fill='white' d='M78 56h96a10 10 0 0 1 10 10v66.7a10 10 0 0 1 -2.93 7.07l-27.3 27.3a10 10 0 0 1 -7.07 2.93H124l-24 24v-24H78a10 10 0 0 1 -10 -10V66a10 10 0 0 1 10 -10Z'/><rect x='112' y='90' width='14' height='40' rx='5' fill='%239146FF'/><rect x='146' y='90' width='14' height='40' rx='5' fill='%239146FF'/></svg>" />
+<style>
+  .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;}
+  .login-card{width:100%;max-width:360px;background:var(--bg-surface);border:1px solid var(--border);border-radius:14px;padding:28px;box-shadow:var(--shadow);}
+  .login-card h1{font-size:20px;margin:0 0 4px;color:var(--txt);}
+  .login-card .sub{color:var(--txt-dim);font-size:13px;margin:0 0 20px;}
+  .login-card label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--txt-dim);margin:14px 0 6px;}
+  .login-card .input{width:100%;box-sizing:border-box;}
+  .login-card .btn{width:100%;margin-top:20px;}
+  .login-access{margin:16px 0 0;text-align:center;color:var(--txt-dim);font-size:13px;}
+  .login-access a{color:var(--blue);font-weight:600;text-decoration:none;}
+  .login-access a:hover{text-decoration:underline;}
+  .login-err{margin-top:14px;color:var(--red);font-size:13px;min-height:16px;}
+  .totp-row.hidden{display:none;}
+</style>
+</head>
+<body>
+<div class="login-wrap">
+  <form class="login-card" id="login-form" autocomplete="off">
+    <div class="brand-logo login-logo">
+      <svg class="brand-mark" viewBox="0 0 104 112" fill="none" aria-hidden="true"><path d="M20 8h72a8 8 0 0 1 8 8v50a8 8 0 0 1 -2.34 5.66l-20.5 20.5A8 8 0 0 1 71.5 94.5H55l-18 18v-18H20a8 8 0 0 1 -8 -8V16a8 8 0 0 1 8 -8Z" fill="#9146FF"/><rect x="45" y="34" width="11" height="30" rx="4" fill="#fff"/><rect x="71" y="34" width="11" height="30" rx="4" fill="#fff"/></svg>
+      <span class="brand-word">Twitch<span>Farmer</span></span>
+    </div>
+    <p class="sub">Вход в панель</p>
+
+    <label for="l-user">Логин</label>
+    <input id="l-user" class="input" name="username" autocomplete="username" maxlength="256" required />
+
+    <label for="l-pass">Пароль</label>
+    <input id="l-pass" class="input" name="password" type="password" autocomplete="current-password" maxlength="256" required />
+
+    <div class="totp-row hidden" id="totp-row">
+      <label for="l-totp">Код 2FA</label>
+      <input id="l-totp" class="input" name="totp" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
+    </div>
+
+    <button class="btn primary big" id="l-btn" type="submit">Войти</button>
+    <p class="login-access">Нет аккаунта? <a href="https://t.me/twitchfarmer" target="_blank" rel="noopener noreferrer">Купить доступ</a></p>
+    <div class="login-err" id="l-err"></div>
+  </form>
+</div>
+
+<script src="/static/login.js" defer></script>
+</body>
+</html>

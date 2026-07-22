@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="ru" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Twitch Farmer</title>
+<script src="/static/theme.js"></script>
+<link rel="stylesheet" href="/static/style.css" />
+<link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 240'><rect width='240' height='240' rx='52' fill='%239146FF'/><path fill='white' d='M78 56h96a10 10 0 0 1 10 10v66.7a10 10 0 0 1 -2.93 7.07l-27.3 27.3a10 10 0 0 1 -7.07 2.93H124l-24 24v-24H78a10 10 0 0 1 -10 -10V66a10 10 0 0 1 10 -10Z'/><rect x='112' y='90' width='14' height='40' rx='5' fill='%239146FF'/><rect x='146' y='90' width='14' height='40' rx='5' fill='%239146FF'/></svg>" />
+</head>
+<body>
+<div id="app-loader" class="app-loader" role="status" aria-live="polite">
+  <div class="loader-mark" aria-hidden="true">
+    <span></span><span></span><span></span>
+  </div>
+  <div class="loader-brand">Twitch Farmer</div>
+</div>
+<div id="toast" class="toast"></div>
+
+<div class="app">
+  <!-- ─── Navigation rail ─────────────────────────────────────────────── -->
+  <nav class="rail" aria-label="Navigation">
+    <div class="rail-logo">
+      <svg class="rail-mark" viewBox="0 0 104 112" fill="none" aria-hidden="true"><path d="M20 8h72a8 8 0 0 1 8 8v50a8 8 0 0 1 -2.34 5.66l-20.5 20.5A8 8 0 0 1 71.5 94.5H55l-18 18v-18H20a8 8 0 0 1 -8 -8V16a8 8 0 0 1 8 -8Z" fill="#9146FF"/><rect x="45" y="34" width="11" height="30" rx="4" fill="#fff"/><rect x="71" y="34" width="11" height="30" rx="4" fill="#fff"/></svg>
+      <span class="rail-title">Twitch<span class="accent">Farmer</span></span>
+    </div>
+    <div class="rail-nav">
+      <button class="tab active" data-tab="accounts" type="button" title="Accounts">
+        <svg class="rail-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span class="rail-label" data-i18n="all_accounts">Accounts</span>
+      </button>
+      <button class="tab" data-tab="proxies" type="button" title="Proxies">
+        <svg class="rail-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        <span class="rail-label" data-i18n="proxies">Proxies</span>
+      </button>
+      <button class="tab" data-tab="campaigns" type="button" title="Campaigns">
+        <svg class="rail-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>
+        <span class="rail-label" data-i18n="campaigns_tab">Campaigns</span>
+      </button>
+      <button class="tab" data-tab="farm" type="button" title="Farm">
+        <svg class="rail-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        <span class="rail-label" data-i18n="farm">Farm</span>
+      </button>
+      <button class="tab" data-tab="convert" type="button" title="Convert">
+        <svg class="rail-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        <span class="rail-label" data-i18n="convert_tab">Convert</span>
+      </button>
+    </div>
+    <div class="rail-foot">
+      <button class="lang-btn" id="lang-btn" data-i18n="lang_btn" type="button">RU</button>
+    </div>
+  </nav>
+
+  <!-- ─── Main ────────────────────────────────────────────────────────── -->
+  <section class="main">
+    <header class="topbar">
+      <span class="topbar-title" id="page-title" data-i18n="all_accounts">Accounts</span>
+      <div class="topbar-right">
+        <span id="sub-badge" class="me-badge"></span>
+        <span id="me-badge" class="me-badge"></span>
+        <button class="icon-toggle" data-theme-toggle type="button" aria-pressed="false" aria-label="Theme" title="Dark theme">
+          <svg class="ic ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+          <svg class="ic ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+        <a id="admin-link" class="btn outline small hidden" href="/admin" data-i18n="admin">Admin</a>
+        <button id="logout-btn" class="btn outline small" type="button" data-i18n="logout">Logout</button>
+      </div>
+    </header>
+
+    <!-- ─── Accounts page ──────────────────────────────────────────── -->
+    <div class="page" data-page="accounts">
+      <div class="acc-toolbar">
+        <div class="tb-group tb-search">
+          <input id="f-login" class="input" placeholder="Login" data-i18n-ph="login_ph" autocomplete="off" />
+          <input id="f-token" class="input" placeholder="Token" data-i18n-ph="token_ph" autocomplete="off" />
+          <input id="f-season" class="input" placeholder="Season" data-i18n-ph="season_ph" autocomplete="off" />
+        </div>
+        <div class="tb-group tb-filters">
+          <button class="filter-btn" id="btn-role" type="button" data-i18n="role">Role</button>
+          <button class="filter-btn" id="btn-camp" type="button" data-i18n="campaign">Campaign</button>
+          <button class="filter-btn" id="btn-prog" type="button" data-i18n="progress">Progress</button>
+          <button class="filter-btn" id="btn-sea"  type="button" data-i18n="season">Season</button>
+          <button id="clear-filters" class="link-btn hidden" type="button" data-i18n="clear">Clear</button>
+        </div>
+
+        <div class="tb-spacer"></div>
+
+        <div class="tb-group btn-group tb-manage">
+          <button id="sel-btn" class="btn outline small" type="button" data-i18n="select_all">Select All</button>
+          <button id="imp-btn" class="btn accent small" type="button" data-i18n="import_accounts">Import</button>
+          <button id="exp-btn" class="btn accent small" type="button" data-i18n="export_selected">Export</button>
+          <button id="check-btn" class="btn outline small" type="button" data-i18n="check_btn">Check</button>
+          <span id="check-progress-label" class="check-progress-label"></span>
+          <button id="role-btn" class="btn outline small" type="button" data-i18n="set_role_selected">Set Role</button>
+        </div>
+
+        <span class="tb-divider" aria-hidden="true"></span>
+        <button id="bulk-del-btn" class="btn danger small" type="button" data-i18n="delete_selected">Delete Selected</button>
+
+        <span class="tb-divider" aria-hidden="true"></span>
+        <div class="tb-group tb-farm">
+          <button id="farm-btn" class="btn primary" type="button">
+            <span id="farm-btn-label" data-i18n="start_farm">Start</span>
+            <span id="farm-launch-count" class="farm-launch-count"></span>
+          </button>
+          <label class="stagger-control">
+            <span data-i18n="stagger_delay">Stagger (s)</span>
+            <input id="farm-stagger" class="input" type="number" min="0" max="120" step="0.5" value="2" />
+          </label>
+        </div>
+      </div>
+      <div id="status" class="status"></div>
+      <div class="split">
+        <div class="table-wrap">
+          <table id="acc-table" class="table">
+            <thead>
+              <tr>
+                <th class="col-chk"><input type="checkbox" id="th-chk" /></th>
+                <th data-i18n="login">Login</th>
+                <th data-i18n="role">Role</th>
+                <th data-i18n="campaign">Campaign</th>
+                <th class="num" data-i18n="progress">Progress</th>
+                <th data-i18n="season">Season</th>
+              </tr>
+            </thead>
+            <tbody id="acc-body"></tbody>
+          </table>
+          <div id="acc-empty" class="empty hidden" data-i18n="no_accounts_hint">No accounts yet — click Import.</div>
+        </div>
+
+        <aside class="detail" id="detail">
+          <div class="detail-head">
+            <span class="detail-title" data-i18n="details">Details</span>
+            <button id="all-camps-btn" class="link-btn hidden" type="button">↗ <span data-i18n="campaigns_popup">Campaigns</span></button>
+          </div>
+          <div class="detail-body">
+            <div class="d-row">
+              <span class="d-login" id="d-login">—</span>
+              <span class="d-role hidden" id="d-role"></span>
+            </div>
+
+            <div class="cap" data-i18n="campaign_progress">Progress</div>
+            <div class="d-pct-row">
+              <div class="d-pct" id="d-pct">0%</div>
+              <div class="d-bar"><div class="d-bar-fill" id="d-bar"></div></div>
+            </div>
+            <div class="d-meta">
+              <span id="d-cname" class="d-cname">—</span>
+              <span id="d-sea" class="d-sea hidden"></span>
+            </div>
+            <div id="d-campaigns-box" class="d-campaigns-box hidden">
+              <div class="cap" data-i18n="campaigns_popup">Campaigns</div>
+              <div id="d-campaigns-list" class="d-campaigns-list"></div>
+            </div>
+
+            <div id="drops-box" class="drops-box hidden">
+              <div class="cap" data-i18n="drops">Drops</div>
+              <div id="drops-list" class="drops-list"></div>
+            </div>
+
+            <div class="cap" data-i18n="credentials">Credentials</div>
+            <div class="cred-row">
+              <span class="cred-label" data-i18n="password">Password</span>
+              <span class="cred-value" id="d-pass">—</span>
+              <button class="icon-btn" id="d-pass-copy" type="button" title="Copy" aria-label="Copy"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+            </div>
+            <div class="cred-row">
+              <span class="cred-label" data-i18n="token">Token</span>
+              <span class="cred-value" id="d-tok">—</span>
+              <button class="icon-btn" id="d-tok-copy" type="button" title="Copy" aria-label="Copy"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+            </div>
+            <button id="d-copy-login-pass-token-btn" class="copy-field" type="button">
+              <span data-i18n="copy_login_pass_token">Copy login:password:token</span>
+              <span class="copy-field-value" id="d-copy-login-pass-token-value">—</span>
+            </button>
+            <button id="d-copy-login-pass-btn" class="copy-field" type="button">
+              <span data-i18n="copy_login_pass">Copy login:password</span>
+              <span class="copy-field-value" id="d-copy-login-pass-value">—</span>
+            </button>
+
+            <div class="d-actions">
+              <button id="edit-btn" class="btn outline" type="button" data-i18n="edit">Edit</button>
+              <button id="del-btn" class="btn danger" type="button" data-i18n="delete">Delete</button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <!-- ─── Proxies page ───────────────────────────────────────────── -->
+    <div class="page hidden" data-page="proxies">
+      <div class="proxies-pane">
+        <div class="card">
+          <div class="proxy-toolbar">
+            <button id="proxy-sel-btn" class="btn outline" type="button" data-i18n="select_all">Select All</button>
+            <button id="proxy-imp-btn" class="btn accent" type="button" data-i18n="import_proxies">Import</button>
+            <button id="proxy-check-btn" class="btn primary" type="button" data-i18n="check_proxies">Check</button>
+            <button id="proxy-del-btn" class="btn danger" type="button" data-i18n="delete_selected">Delete Selected</button>
+          </div>
+        </div>
+        <div class="table-wrap proxy-table-wrap">
+          <table id="proxy-table" class="table">
+            <thead>
+              <tr>
+                <th class="col-chk"><input type="checkbox" id="proxy-th-chk" /></th>
+                <th data-i18n="index">#</th>
+                <th data-i18n="proxy">Proxy</th>
+                <th data-i18n="host">Host</th>
+                <th data-i18n="port">Port</th>
+                <th data-i18n="auth_user">Auth user</th>
+                <th data-i18n="status">Status</th>
+                <th data-i18n="latency">Latency</th>
+              </tr>
+            </thead>
+            <tbody id="proxy-body"></tbody>
+          </table>
+          <div id="proxy-empty" class="empty" data-i18n="no_proxies_hint">No proxies yet — click Import.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── Campaigns page ─────────────────────────────────────────── -->
+    <div class="page hidden" data-page="campaigns">
+      <div class="campaigns-pane">
+        <div class="card">
+          <div class="cap-row">
+            <div>
+              <div class="cap" data-i18n="campaign_catalog">Campaign catalog</div>
+              <div id="campaigns-updated" class="muted"></div>
+            </div>
+          </div>
+        </div>
+        <div class="campaigns-search-row">
+          <input id="campaigns-search" class="input" type="search" data-i18n-ph="campaigns_search_ph" placeholder="Search campaigns, games, owners or rewards" />
+          <button id="campaigns-deselect-all" class="btn outline small hidden" type="button" data-i18n="deselect_all">Deselect All</button>
+        </div>
+        <div id="campaigns-list" class="campaign-catalog-list"></div>
+        <div id="campaigns-empty" class="empty hidden" data-i18n="no_campaigns">No active campaigns found.</div>
+      </div>
+    </div>
+
+    <!-- ─── Farm page ──────────────────────────────────────────────── -->
+    <div class="page hidden" data-page="farm">
+      <div class="farm-pane">
+        <div id="farm-status-bar" class="farm-status cap">Farm stopped</div>
+        <div class="card">
+          <div class="cap-row">
+            <div class="cap" data-i18n="farm_log">Log</div>
+            <button id="log-clear" class="link-btn" type="button">×</button>
+          </div>
+          <div id="log-box" class="log-box" data-i18n-ph="no_logs"></div>
+        </div>
+        <div id="farm-cards" class="farm-cards"></div>
+      </div>
+    </div>
+
+    <div class="page hidden" data-page="convert">
+      <div class="convert-pane">
+        <div class="card">
+          <div class="convert-info" data-i18n="convert_info">
+            Convert web tokens to mobile tokens using Twitch device authorization.
+          </div>
+          <div class="convert-toolbar">
+            <button id="convert-all-btn" class="btn primary" type="button" data-i18n="convert_all">Convert all web tokens</button>
+            <button id="convert-selected-btn" class="btn outline" type="button" data-i18n="convert_selected">Convert selected</button>
+            <button id="convert-stop-btn" class="btn danger" type="button" data-i18n="stop">Stop</button>
+          </div>
+          <div class="convert-progress-row">
+            <div class="convert-progress"><span id="convert-progress-fill"></span></div>
+            <span id="convert-progress-label">0 / 0</span>
+          </div>
+          <div id="convert-status" class="convert-status hidden"></div>
+          <div id="convert-counters" class="convert-counters"></div>
+        </div>
+        <div class="card">
+          <div class="cap" data-i18n="convert_accounts">Web-token accounts</div>
+          <div id="convert-accounts" class="convert-accounts"></div>
+        </div>
+        <div class="card">
+          <div class="cap" data-i18n="convert_results">Results</div>
+          <div id="convert-results" class="convert-results"></div>
+        </div>
+      </div>
+    </div>
+
+  </section>
+</div>
+
+<!-- ─── Modals ────────────────────────────────────────────────────────── -->
+<div class="modal-root" id="modal-root"></div>
+
+<script src="/static/app.js" defer></script>
+</body>
+</html>

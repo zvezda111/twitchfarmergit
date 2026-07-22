@@ -1,0 +1,34 @@
+# secrets / runtime data
+backup.env
+*.env
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# logs
+*.log
+
+# backups
+*.bak
+*.bak_*
+*.*.bak
+.bak-*/
+static_bak_*/
+
+# go build artifacts
+goworker/twitchfarmer-goworker
+goworker/twitchfarmer-goworker.*
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
