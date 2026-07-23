@@ -3020,6 +3020,13 @@ def admin_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "admin.html")
 
 
+@app.get("/yandex_465fa972d1691a2b.html")
+def yandex_verify() -> FileResponse:
+    return FileResponse(
+        STATIC_DIR / "yandex_465fa972d1691a2b.html", media_type="text/html"
+    )
+
+
 @app.get("/robots.txt")
 def robots_txt() -> FileResponse:
     return FileResponse(STATIC_DIR / "robots.txt", media_type="text/plain")
