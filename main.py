@@ -3020,6 +3020,16 @@ def admin_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "admin.html")
 
 
+@app.get("/robots.txt")
+def robots_txt() -> FileResponse:
+    return FileResponse(STATIC_DIR / "robots.txt", media_type="text/plain")
+
+
+@app.get("/sitemap.xml")
+def sitemap_xml() -> FileResponse:
+    return FileResponse(STATIC_DIR / "sitemap.xml", media_type="application/xml")
+
+
 @app.get("/")
 def root() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
@@ -3028,4 +3038,6 @@ def root() -> FileResponse:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    _host = os.getenv("PANEL_HOST", "127.0.0.1")
+    _port = int(os.getenv("PANEL_PORT", "8000"))
+    uvicorn.run("main:app", host=_host, port=_port, reload=False)

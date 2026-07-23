@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /$
+Allow: /login
+Allow: /static/
+Disallow: /api/
+Disallow: /admin
+Disallow: /ws
+
+Sitemap: https://twitchautodrops.best/sitemap.xml
