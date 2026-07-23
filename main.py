@@ -3020,6 +3020,16 @@ def admin_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "admin.html")
 
 
+@app.get("/favicon.ico")
+def favicon_ico() -> FileResponse:
+    return FileResponse(STATIC_DIR / "favicon.ico", media_type="image/x-icon")
+
+
+@app.get("/apple-touch-icon.png")
+def apple_touch_icon() -> FileResponse:
+    return FileResponse(STATIC_DIR / "apple-touch-icon.png", media_type="image/png")
+
+
 @app.get("/yandex_465fa972d1691a2b.html")
 def yandex_verify() -> FileResponse:
     return FileResponse(
