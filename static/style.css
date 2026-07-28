@@ -5,7 +5,7 @@ body {
   margin: 0;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
                "Helvetica Neue", Arial, sans-serif;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--txt);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
@@ -260,6 +260,7 @@ input, textarea { color: inherit; }
   color: var(--txt-dim);
 }
 .cap-row { display: flex; align-items: center; justify-content: space-between; }
+.log-actions { display: flex; align-items: center; gap: 10px; }
 .hr { height: 1px; background: var(--border); }
 .hr.small { margin: 6px 0; }
 .spacer { flex: 1; }
@@ -275,7 +276,7 @@ input, textarea { color: inherit; }
   border-radius: var(--radius-sm);
   padding: 0 10px;
   height: 32px;
-  font-size: 13px;
+  font-size: 14px;
   outline: none;
   transition: border-color .12s, background .12s;
 }
@@ -671,7 +672,7 @@ input, textarea { color: inherit; }
 .table tbody td {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
-  font-size: 13px;
+  font-size: 14px;
   vertical-align: middle;
 }
 .login-cell { white-space: nowrap; }
@@ -882,12 +883,24 @@ input, textarea { color: inherit; }
   border-radius: var(--radius-sm);
   padding: 8px 10px;
   font-family: ui-monospace, SFMono-Regular, "Menlo", "Consolas", monospace;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--txt-2);
+  height: 160px;
   min-height: 72px;
-  max-height: 120px;
+  max-height: none;
   overflow-y: auto;
+  resize: vertical;
   white-space: pre-wrap;
+}
+.log-box.collapsed {
+  height: 0 !important;
+  min-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-top-width: 0;
+  border-bottom-width: 0;
+  overflow: hidden;
+  resize: none;
 }
 .log-box .l-line { display: flex; gap: 6px; }
 .log-box .l-time { color: var(--txt-dim); }
@@ -1086,6 +1099,17 @@ input[type=checkbox] { accent-color: var(--accent); }
 }
 .f-card.over-limit .f-camp { color: var(--amber); font-weight: 600; }
 .toast.warn { border-color: var(--amber); color: var(--amber); }
+
+/* ─── Farm cards: queued ───────────────────────────────────────────────── */
+.f-card.card-queued {
+  opacity: .58;
+  border-style: dashed;
+}
+.queued-badge {
+  color: var(--txt-dim);
+  font-size: 11px;
+  font-weight: 600;
+}
 
 /* ─── Farm cards: отфармлено (100%) ─────────────────────────────────────── */
 .f-card.farmed {

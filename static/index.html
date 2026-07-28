@@ -205,9 +205,9 @@
               <button class="icon-btn" id="d-pass-copy" type="button" title="Copy" aria-label="Copy"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
             </div>
             <div class="cred-row">
-              <span class="cred-label" data-i18n="token">Token</span>
-              <span class="cred-value" id="d-tok">—</span>
-              <button class="icon-btn" id="d-tok-copy" type="button" title="Copy" aria-label="Copy"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+              <span class="cred-label" data-i18n="login">Login</span>
+              <span class="cred-value" id="d-clogin">—</span>
+              <button class="icon-btn" id="d-clogin-copy" type="button" title="Copy" aria-label="Copy"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
             </div>
             <button id="d-copy-login-pass-token-btn" class="copy-field" type="button">
               <span data-i18n="copy_login_pass_token">Copy login:password:token</span>
@@ -286,7 +286,10 @@
         <div class="card">
           <div class="cap-row">
             <div class="cap" data-i18n="farm_log">Log</div>
-            <button id="log-clear" class="link-btn" type="button">×</button>
+            <div class="log-actions">
+              <button id="log-collapse" class="link-btn" type="button" data-i18n="log_collapse_btn">Collapse</button>
+              <button id="log-clear" class="link-btn" type="button" data-i18n="log_clear_btn">Clear</button>
+            </div>
           </div>
           <div id="log-box" class="log-box" data-i18n-ph="no_logs"></div>
         </div>

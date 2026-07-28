@@ -106,9 +106,12 @@ const LANG = {
     convert_stage_authorization_received: "authorization received",
     convert_stage_token_received: "token received",
     over_limit: "Out of limit", over_limit_hint: "not started (thread limit)",
+    farm_queued: "queued",
+    queued_toast: "{n} account(s) queued — will start as slots free up",
     farmed: "Farmed",
     over_limit_toast: "Thread limit {limit} — {n} account(s) out of limit, not started",
     farm_log: "Log", no_logs: "No logs yet", showing: "showing {} of {}",
+    log_clear_btn: "Clear", log_collapse_btn: "Collapse", log_expand_btn: "Expand",
     starting_farm: "Starting farm…", checking_proxies: "Checking…",
     watched_min: "min",
     configs: "Configs", new_config: "New",
@@ -233,9 +236,12 @@ const LANG = {
     convert_stage_authorization_received: "авторизация получена",
     convert_stage_token_received: "токен получен",
     over_limit: "Вне лимита", over_limit_hint: "не запущен (лимит потоков)",
+    farm_queued: "в очереди",
+    queued_toast: "{n} аккаунт(ов) в очереди — запустятся по мере освобождения потоков",
     farmed: "Отфармлено",
     over_limit_toast: "Лимит потоков {limit} — {n} аккаунт(ов) вне лимита, не запущены",
     farm_log: "Лог", no_logs: "Нет логов", showing: "показано {} из {}",
+    log_clear_btn: "Очистить", log_collapse_btn: "Свернуть", log_expand_btn: "Развернуть",
     starting_farm: "Запуск фарма…", checking_proxies: "Проверка…",
     watched_min: "мин",
     configs: "Конфиги", new_config: "Новый",
@@ -644,8 +650,8 @@ function showDetail() {
   const token = acc.token || "";
   document.getElementById("d-pass").textContent = password || "—";
   document.getElementById("d-pass").dataset.raw = password;
-  document.getElementById("d-tok").textContent = token || "—";
-  document.getElementById("d-tok").dataset.raw = token;
+  document.getElementById("d-clogin").textContent = acc.login || "—";
+  document.getElementById("d-clogin").dataset.raw = acc.login || "";
   document.getElementById("d-copy-login-pass-token-value").textContent =
     `${acc.login || "—"}:${password}:${token}`;
   document.getElementById("d-copy-login-pass-value").textContent =
@@ -752,15 +758,15 @@ function clearDetail() {
   document.getElementById("drops-box").classList.add("hidden");
   document.getElementById("d-pass").textContent = "—";
   document.getElementById("d-pass").dataset.raw = "";
-  document.getElementById("d-tok").textContent = "—";
-  document.getElementById("d-tok").dataset.raw = "";
+  document.getElementById("d-clogin").textContent = "—";
+  document.getElementById("d-clogin").dataset.raw = "";
   document.getElementById("d-copy-login-pass-token-value").textContent = "—";
   document.getElementById("d-copy-login-pass-value").textContent = "—";
   state.dropCheck = { login: null, loading: false, result: null };
   document.getElementById("all-camps-btn").classList.add("hidden");
 }
 document.getElementById("d-pass-copy").addEventListener("click", () => copyEl("d-pass"));
-document.getElementById("d-tok-copy").addEventListener("click", () => copyEl("d-tok"));
+document.getElementById("d-clogin-copy").addEventListener("click", () => copyEl("d-clogin"));
 function copyEl(id) {
   const v = document.getElementById(id).dataset.raw || "";
   copyText(v);
@@ -1946,11 +1952,12 @@ function scheduleFarmRepaint(immediate = false) {
 function renderFarmCards() {
   const w = document.getElementById("farm-cards");
   w.innerHTML = "";
-  // сначала активные, затем отфармленные (100%) — уходят вниз
+  // сначала активные, затем queued, затем отфармленные (100%) — уходят вниз
   const entries = [...state.farm.cards.entries()];
-  const active = entries.filter(([, c]) => (c.progress || 0) < 100);
+  const active = entries.filter(([, c]) => !c.queued && (c.progress || 0) < 100);
+  const queued = entries.filter(([, c]) => c.queued);
   const farmed = entries.filter(([, c]) => (c.progress || 0) >= 100);
-  const ordered = [...active, ...farmed].map(([login, c]) => ({ login, c }));
+  const ordered = [...active, ...queued, ...farmed].map(([login, c]) => ({ login, c }));
   for (const login of state.farm.overLimit) {
     if (!state.farm.cards.has(login)) ordered.push({ login, overLimit: true });
   }
@@ -1979,8 +1986,9 @@ function renderFarmCards() {
       continue;
     }
     const done = (c.progress || 0) >= 100;
+    const queued = Boolean(c.queued);
     const div = document.createElement("div");
-    div.className = done ? "f-card farmed" : "f-card";
+    div.className = done ? "f-card farmed" : queued ? "f-card card-queued" : "f-card";
     const p = Math.max(0, Math.min(100, Number(c.progress) || 0));
     const col = pctColor(p);
     const start = state.farm.cardStartedAt.get(login);
@@ -1988,7 +1996,7 @@ function renderFarmCards() {
     div.innerHTML = `
       <div class="f-login">${escapeHtml(login)}</div>
       <div class="f-time" data-start="${start || 0}">${fmtDuration(start)}</div>
-      <div class="f-camp">${done ? t("farmed") : escapeHtml(c.campaign || "—")}</div>
+      <div class="f-camp">${queued ? `<span class="queued-badge">${t("farm_queued")}</span>` : done ? t("farmed") : escapeHtml(c.campaign || "—")}</div>
       <div class="f-pct" style="color:${col}">${p}%</div>
       <div class="f-bar"><span style="width:${p}%; background:${col};"></span></div>
       <div class="f-log">${escapeHtml(c.log || "")}</div>
@@ -2017,6 +2025,9 @@ function appendLog(entry) {
 
 function flushLogs() {
   const box = document.getElementById("log-box");
+  const pinned =
+    box.scrollHeight - box.scrollTop - box.clientHeight < 40 ||
+    box.childElementCount === 0;
   box.innerHTML = "";
   for (const entry of state.farm.logs.slice(-FARM_LOG_DOM_CAP)) {
     const line = document.createElement("div");
@@ -2031,7 +2042,7 @@ function flushLogs() {
     line.innerHTML = `<span class="l-time">${hh}:${mm}:${ss}</span><span class="l-login">${escapeHtml(entry.login || "")}</span><span class="l-msg">${escapeHtml(message)}</span>`;
     box.appendChild(line);
   }
-  box.scrollTop = box.scrollHeight;
+  if (pinned) box.scrollTop = box.scrollHeight;
 }
 
 function updateFarmLaunchCount() {
@@ -2112,6 +2123,9 @@ document.getElementById("farm-btn").addEventListener("click", async () => {
           "warn"
         );
       }
+      if (res && Array.isArray(res.queued) && res.queued.length) {
+        toast(t("queued_toast").replace("{n}", res.queued.length), "");
+      }
       scheduleFarmRepaint(true);
     } else {
       const btn = document.getElementById("farm-btn");
@@ -2153,6 +2167,15 @@ document.getElementById("log-clear").addEventListener("click", () => {
   saveFarmCache(true);
 });
 
+document.getElementById("log-collapse").addEventListener("click", () => {
+  const box = document.getElementById("log-box");
+  const collapsed = box.classList.toggle("collapsed");
+  const btn = document.getElementById("log-collapse");
+  btn.dataset.i18n = collapsed ? "log_expand_btn" : "log_collapse_btn";
+  btn.textContent = t(btn.dataset.i18n);
+  if (!collapsed) flushLogs();
+});
+
 function connectWS() {
   if (state.ws) try { state.ws.close(); } catch (_) {}
   const url = (location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/ws/farm";
@@ -2175,6 +2198,7 @@ function connectWS() {
           drops: c.drops,
           campaigns: c.campaigns,
           log: c.log,
+          queued: c.queued,
         });
         if (c.started_at) state.farm.cardStartedAt.set(c.login, c.started_at);
         pendingFarmLogins.add(c.login);
@@ -2206,7 +2230,7 @@ function connectWS() {
       scheduleFarmRepaint(true);
     } else if (data.type === "card") {
       const cur = state.farm.cards.get(data.login) || {};
-      for (const field of ["started_at", "campaign", "progress", "season", "drops", "campaigns", "log"]) {
+      for (const field of ["started_at", "campaign", "progress", "season", "drops", "campaigns", "log", "queued"]) {
         if (Object.prototype.hasOwnProperty.call(data, field)) cur[field] = data[field];
       }
       if (Object.prototype.hasOwnProperty.call(data, "started_at")) {

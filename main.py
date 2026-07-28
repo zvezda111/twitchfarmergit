@@ -203,6 +203,72 @@ def _write_json(path: Path, value: Any) -> None:
     )
 
 
+def _campaign_norm(value: Any) -> str:
+    """Normalize a campaign/season name for de-duplication comparisons."""
+    return str(value or "").replace("\u2019", "'").strip().casefold()
+
+
+def dedupe_campaigns(campaigns: Any) -> list[dict]:
+    """Collapse campaigns that refer to the same game+season into one entry.
+
+    Duplicate drops (same drop name) keep the highest watched-minute value,
+    and each campaign's aggregate progress is recomputed from its drops.
+    """
+    if not isinstance(campaigns, list):
+        return [{"name": "", "progress": 0, "season": "", "drops": {}}]
+    order: list[tuple[str, str]] = []
+    by_key: dict[tuple[str, str], dict] = {}
+    for c in campaigns:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name", "") or "")
+        season = str(c.get("season", "") or "")
+        key = (_campaign_norm(name), _campaign_norm(season))
+        if key == ("", ""):
+            continue
+        drops_src = c.get("drops") or {}
+        existing = by_key.get(key)
+        if existing is None:
+            existing = {
+                "name": name,
+                "progress": int(c.get("progress", 0) or 0),
+                "season": season,
+                "drops": {},
+            }
+            by_key[key] = existing
+            order.append(key)
+        else:
+            if not existing["name"] and name:
+                existing["name"] = name
+            if not existing["season"] and season:
+                existing["season"] = season
+        if isinstance(drops_src, dict):
+            for drop_name, value in drops_src.items():
+                if not isinstance(value, dict):
+                    continue
+                prev = existing["drops"].get(drop_name)
+                if (
+                    not isinstance(prev, dict)
+                    or int(value.get("current", 0) or 0)
+                    >= int(prev.get("current", 0) or 0)
+                ):
+                    existing["drops"][drop_name] = dict(value)
+    result: list[dict] = []
+    for key in order:
+        c = by_key[key]
+        values = [
+            int(v.get("progress", 0) or 0)
+            for v in c["drops"].values()
+            if isinstance(v, dict)
+        ]
+        if values:
+            c["progress"] = int(sum(values) / len(values))
+        result.append(c)
+    if not result:
+        result = [{"name": "", "progress": 0, "season": "", "drops": {}}]
+    return result
+
+
 def load_accounts(uid: int) -> list[dict]:
     raw = _read_json(accounts_file(uid), [])
     if not isinstance(raw, list):
@@ -221,10 +287,13 @@ def load_accounts(uid: int) -> list[dict]:
             a["campaigns"] = [{"name": "", "progress": 0, "season": "", "drops": {}}]
         else:
             for c in camps:
+                if not isinstance(c, dict):
+                    continue
                 c.setdefault("name", "")
                 c.setdefault("progress", 0)
                 c.setdefault("season", "")
                 c.setdefault("drops", {})
+            a["campaigns"] = dedupe_campaigns(camps)
         cleaned.append(a)
     return cleaned
 
@@ -589,7 +658,7 @@ def best_campaign(acc: dict) -> dict:
 def campaign_payloads(acc: dict) -> list[dict]:
     """Return only safe campaign fields for farm cards and WebSocket clients."""
     result: list[dict] = []
-    for campaign in acc.get("campaigns") or []:
+    for campaign in dedupe_campaigns(acc.get("campaigns") or []):
         if not isinstance(campaign, dict):
             continue
         result.append(
@@ -730,6 +799,20 @@ class FarmEngine:
         self.go_engine = False
         self.mp_queue = None
         self.queue_drain_task: asyncio.Task | None = None
+        self.farm_plan: list[str] = []
+        self.farm_limit: int = 0
+        self.farm_done: set[str] = set()
+        self.farm_active: list[str] = []
+        self.farm_stagger: float = 5.0
+        self.farm_active_since: dict[str, float] = {}
+        self.supervisor_task: asyncio.Task | None = None
+        self._rebatching = False
+        self._prep_streamers: list[str] = []
+        self._prep_valid_proxies = []
+        self._prep_claim_proxies = []
+        self._prep_config: dict = {}
+        self._prep_go_available = False
+        self._prep_go_binary = None
         self.last_start_counts = {
             "launched": 0,
             "skipped_web": 0,
@@ -758,6 +841,7 @@ class FarmEngine:
         self,
         selected_logins: list[str] | None = None,
         stagger: float = 5.0,
+        limit: int = 0,
     ) -> None:
         self.last_start_error = None
         if (
@@ -886,23 +970,6 @@ class FarmEngine:
             "\n".join(streamers) + "\n", encoding="utf-8"
         )
 
-        self.cards.clear()
-        self.farm_accounts = {a["login"]: a for a in farm_accs if a.get("login")}
-        for account in farm_accs:
-            login = account.get("login")
-            if not login:
-                continue
-            best = campaign_for_game(account, None)
-            self.cards[login] = {
-                "started_at": time.time(),
-                "campaign": best.get("name", "") or "—",
-                "progress": int(best.get("progress", 0) or 0),
-                "season": best.get("season", ""),
-                "drops": dict(best.get("drops") or {}),
-                "campaigns": campaign_payloads(account),
-                "log": "Initializing...",
-            }
-
         config_values = {
             "connection_timeout": 30,
             "retry_delay": 5,
@@ -926,24 +993,92 @@ class FarmEngine:
                 "warn",
                 "Go farm worker binary missing or not executable; falling back to Python worker",
             )
-        go_accs = mobile_accs if go_available else []
-        python_accs = web_accs if go_available else farm_accs
-        if go_available and go_accs:
+        self.farm_accounts = {a["login"]: a for a in farm_accs if a.get("login")}
+        self.farm_plan = [a["login"] for a in farm_accs if a.get("login")]
+        self.farm_limit = int(limit or 0)
+        self.farm_done = set()
+        self.farm_stagger = stagger
+        self.farm_active_since = {}
+        self._prep_streamers = list(streamers)
+        self._prep_valid_proxies = valid_proxies
+        self._prep_claim_proxies = claim_proxies
+        self._prep_config = config_values
+        self._prep_go_available = go_available
+        self._prep_go_binary = go_binary
+        window = (
+            self.farm_plan
+            if self.farm_limit <= 0
+            else self.farm_plan[:self.farm_limit]
+        )
+        await self._spawn_batch(window, clear_cards=True)
+        if self.farm_limit > 0 and len(self.farm_plan) > self.farm_limit:
+            for login in self.farm_plan[self.farm_limit:]:
+                account = self.farm_accounts[login]
+                self.cards[login] = {
+                    "started_at": time.time(),
+                    "campaign": "—",
+                    "progress": 0,
+                    "season": "",
+                    "drops": {},
+                    "campaigns": campaign_payloads(account),
+                    "log": "queued",
+                    "queued": True,
+                }
+            await self.broadcast({"type": "snapshot", "cards": list(self.cards.items())})
+            self.supervisor_task = asyncio.create_task(self._farm_supervisor())
+
+    async def _spawn_batch(
+        self, logins: list[str], *, clear_cards: bool
+    ) -> None:
+        batch_accs = [
+            self.farm_accounts[login]
+            for login in logins
+            if login in self.farm_accounts
+        ]
+        mobile_batch = [a for a in batch_accs if a.get("token_type") == "mobile"]
+        web_batch = [a for a in batch_accs if a.get("token_type") == "web"]
+        go_accs = mobile_batch if self._prep_go_available else []
+        python_accs = web_batch if self._prep_go_available else batch_accs
+        if clear_cards:
+            self.cards.clear()
+        for account in batch_accs:
+            login = account.get("login")
+            if not login:
+                continue
+            if not clear_cards and login in self.cards and not self.cards[login].get("queued"):
+                continue
+            best = campaign_for_game(account, None)
+            self.cards[login] = {
+                "started_at": time.time(),
+                "campaign": best.get("name", "") or "—",
+                "progress": int(best.get("progress", 0) or 0),
+                "season": best.get("season", ""),
+                "drops": dict(best.get("drops") or {}),
+                "campaigns": campaign_payloads(account),
+                "log": "Initializing...",
+            }
+        now = time.time()
+        previous_active = set(self.farm_active)
+        self.farm_active = list(logins)
+        for login in logins:
+            if login not in previous_active:
+                self.farm_active_since[login] = now
+        if self._prep_go_available and go_accs:
             job = {
                 "owner_id": self.owner_id,
                 "accounts": [
                     {"login": a.get("login", ""), "token": a["token"]}
                     for a in go_accs
                 ],
-                "proxies": valid_proxies,
-                "streamers": list(streamers),
-                "config": config_values,
-                "stagger": stagger,
+                "proxies": self._prep_valid_proxies,
+                "streamers": list(self._prep_streamers),
+                "config": self._prep_config,
+                "stagger": self.farm_stagger,
             }
             go_process = None
             try:
                 go_process = await asyncio.create_subprocess_exec(
-                    str(go_binary),
+                    str(self._prep_go_binary),
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
@@ -968,9 +1103,9 @@ class FarmEngine:
                     "warn",
                     "Go farm worker failed to start; falling back to Python worker",
                 )
-                go_available = False
+                self._prep_go_available = False
                 go_accs = []
-                python_accs = farm_accs
+                python_accs = batch_accs
 
         if python_accs:
             ctx = mp.get_context("spawn")
@@ -983,12 +1118,12 @@ class FarmEngine:
                         {"login": a.get("login", ""), "token": a["token"]}
                         for a in python_accs
                     ],
-                    valid_proxies,
-                    claim_proxies,
-                    list(streamers),
-                    config_values,
+                    self._prep_valid_proxies,
+                    self._prep_claim_proxies,
+                    list(self._prep_streamers),
+                    self._prep_config,
                     event_queue,
-                    stagger,
+                    self.farm_stagger,
                 ),
             )
             try:
@@ -1000,10 +1135,10 @@ class FarmEngine:
             self.process = process
             self.mp_queue = event_queue
         self.running = True
-        self.last_start_counts["launched"] = len(farm_accs)
+        self.last_start_counts["launched"] = len(batch_accs)
         await self.broadcast({"type": "running", "running": True})
         await self.broadcast({"type": "snapshot", "cards": list(self.cards.items())})
-        await self._log("system", "info", f"farm started, {len(farm_accs)} account(s)")
+        await self._log("system", "info", f"farm started, {len(batch_accs)} account(s)")
         engine_label = (
             "Go + Python"
             if self.go_engine and self.process
@@ -1018,6 +1153,63 @@ class FarmEngine:
         )
         self.queue_drain_task = asyncio.create_task(self._drain_worker_events())
         self.task = self.queue_drain_task
+
+    def _account_done(self, login: str) -> bool:
+        since = self.farm_active_since.get(login)
+        if since is None or (time.time() - since) < 150:
+            return False
+        card = self.cards.get(login) or {}
+        camps = [c for c in (card.get("campaigns") or []) if c.get("name")]
+        if camps:
+            return all(int(c.get("progress", 0) or 0) >= 100 for c in camps)
+        return int(card.get("progress", 0) or 0) >= 100
+
+    async def _farm_supervisor(self) -> None:
+        CHECK = 15
+        try:
+            while self.running:
+                await asyncio.sleep(CHECK)
+                if not self.running:
+                    break
+                for login in list(self.farm_active):
+                    if login not in self.farm_done and self._account_done(login):
+                        self.farm_done.add(login)
+                        await self._log("system", "info", f"{login}: farmed, freeing slot")
+                remaining = [
+                    l for l in self.farm_active if l not in self.farm_done
+                ]
+                active_set = set(self.farm_active)
+                pending = [
+                    l for l in self.farm_plan
+                    if l not in self.farm_done and l not in active_set
+                ]
+                free = self.farm_limit - len(remaining)
+                if free > 0 and pending:
+                    promote = pending[:free]
+                    new_active = remaining + promote
+                    await self._log(
+                        "system", "info",
+                        f"queue: promoting {len(promote)} account(s), "
+                        f"{len(pending) - len(promote)} still queued",
+                    )
+                    await self._rebatch(new_active)
+                elif not remaining and not pending:
+                    await self._log("system", "info", "queue: all accounts farmed")
+                    self.supervisor_task = None
+                    await self.stop()
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
+    async def _rebatch(self, new_active: list[str]) -> None:
+        self._rebatching = True
+        try:
+            await self._kill_workers()
+            await self._spawn_batch(new_active, clear_cards=False)
+        finally:
+            self._rebatching = False
 
     async def _drain_worker_events(self) -> None:
         drains = []
@@ -1035,7 +1227,7 @@ class FarmEngine:
             await asyncio.gather(*drains, return_exceptions=True)
             raise
         finally:
-            if self.running and not self._workers_alive():
+            if self.running and not self._rebatching and not self._workers_alive():
                 self.running = False
                 await self._log("system", "info", "farm stopped")
                 await self.broadcast({"type": "running", "running": False})
@@ -1302,7 +1494,9 @@ class FarmEngine:
             )
             if current_account is None:
                 return
-            current_account["campaigns"] = account.get("campaigns", [])
+            current_account["campaigns"] = dedupe_campaigns(
+                account.get("campaigns", [])
+            )
             _save_accounts_atomic(self.owner_id, current_accounts)
             account = current_account
             self.farm_accounts[login] = account
@@ -1320,16 +1514,34 @@ class FarmEngine:
             card.update(updated)
             await self.broadcast({"type": "card", "login": login, **updated})
 
-    async def stop(self) -> None:
+    async def _kill_workers(self) -> None:
         process = self.process
         go_process = self.go_process
-        if not self.running and not (
-            (process and process.is_alive())
-            or (go_process and go_process.returncode is None)
-        ):
-            self.cards.clear()
-            return
-        self.running = False
+        # Signal workers to exit BEFORE awaiting the event-drain task's
+        # cancellation. That task's cleanup awaits process termination; if the
+        # worker has not been signalled yet, the await blocks and Stop appears
+        # to do nothing until a second click. Terminating first keeps Stop
+        # working on the first click.
+        if go_process is not None and go_process.returncode is None:
+            try:
+                gpgid = os.getpgid(go_process.pid)
+            except Exception:
+                gpgid = None
+            if gpgid is not None and gpgid == go_process.pid and gpgid != os.getpgrp():
+                try:
+                    os.killpg(gpgid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            else:
+                try:
+                    go_process.terminate()
+                except Exception:
+                    pass
+        if process is not None and process.is_alive():
+            try:
+                process.terminate()
+            except Exception:
+                pass
         drain = self.queue_drain_task
         self.queue_drain_task = None
         self.task = None
@@ -1425,8 +1637,33 @@ class FarmEngine:
         self.go_process = None
         self.go_engine = False
         self.mp_queue = None
+
+    async def stop(self) -> None:
+        process = self.process
+        go_process = self.go_process
+        if not self.running and not (
+            (process and process.is_alive())
+            or (go_process and go_process.returncode is None)
+        ):
+            self.cards.clear()
+            return
+        self.running = False
+        if self.supervisor_task:
+            self.supervisor_task.cancel()
+            try:
+                await self.supervisor_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+            self.supervisor_task = None
+        await self._kill_workers()
         self.farm_accounts.clear()
         self.cards.clear()
+        self.farm_plan = []
+        self.farm_active = []
+        self.farm_done = set()
+        self.farm_active_since = {}
         await self._log("system", "info", "farm stopped")
         await self.broadcast({"type": "running", "running": False})
 
@@ -2664,32 +2901,30 @@ async def api_farm_start(request: Request, req: FarmStartRequest | None = None) 
             )
         if not requested:
             raise HTTPException(400, "нет аккаунтов для запуска")
-        accepted = [
-            a.get("login") for a in launchable[:limit] if a.get("login")
-        ]
-        over_limit = [
-            a.get("login") for a in launchable[limit:] if a.get("login")
-        ]
+        accepted = [a.get("login") for a in launchable if a.get("login")]
+        queued = accepted[limit:]
         if not accepted:
             return {
                 "running": False,
                 "limit": limit,
                 "accepted": [],
-                "over_limit": over_limit,
+                "over_limit": [],
+                "queued": [],
                 "launched": 0,
                 **skipped,
             }
         # для не-admin всегда передаём явный список (без fallback ко всем)
-        await eng.start(accepted, stagger)
+        await eng.start(accepted, stagger, limit=limit)
         if eng.last_start_error:
             raise HTTPException(400, eng.last_start_error)
         logger.info("API: farm start completed")
         return {
             "running": eng.running,
             "limit": limit,
-            "accepted": accepted,
-            "over_limit": over_limit,
-            "launched": len(accepted),
+            "accepted": accepted[:limit],
+            "over_limit": [],
+            "queued": queued,
+            "launched": min(limit, len(accepted)),
             **skipped,
         }
 
@@ -2699,10 +2934,11 @@ async def api_farm_start(request: Request, req: FarmStartRequest | None = None) 
             "running": False,
             "accepted": [],
             "over_limit": [],
+            "queued": [],
             "launched": 0,
             **skipped,
         }
-    await eng.start(accepted, stagger)
+    await eng.start(accepted, stagger, limit=0)
     if eng.last_start_error:
         raise HTTPException(400, eng.last_start_error)
     logger.info("API: farm start completed")
@@ -2710,6 +2946,7 @@ async def api_farm_start(request: Request, req: FarmStartRequest | None = None) 
         "running": eng.running,
         "accepted": accepted,
         "over_limit": [],
+        "queued": [],
         "launched": len(accepted),
         **skipped,
     }
