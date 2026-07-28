@@ -979,6 +979,13 @@ class FarmEngine:
             "inventory_check_minutes": 1,
             "offline_check_interval": 120,
             "data_dir": str(user_dir(self.owner_id)),
+            "campaign_ids": [
+                str(campaign.get("id") or "") for campaign in campaigns
+            ],
+            "campaign_games": [
+                (campaign.get("game_name") or "").lower()
+                for campaign in campaigns
+            ],
         }
         go_requested = os.getenv("FARM_ENGINE", "python").strip().lower() == "go"
         go_binary = Path(

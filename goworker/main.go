@@ -56,6 +56,9 @@ type Config struct {
 	InventoryRefresh      int `json:"inventory_refresh"`
 	InventoryCheckMinutes int `json:"inventory_check_minutes"`
 	OfflineCheckInterval  int `json:"offline_check_interval"`
+	// фарм ограничен выбранными кампаниями; пусто = без ограничения
+	CampaignIDs   []string `json:"campaign_ids"`
+	CampaignGames []string `json:"campaign_games"`
 }
 type Job struct {
 	OwnerID   int       `json:"owner_id"`
@@ -299,6 +302,10 @@ func (m *Miner) inventory(ctx context.Context) {
 		game := mapData(c["game"])
 		gameID, _ := game["id"].(string)
 		gameName, _ := game["name"].(string)
+		campaignID, _ := c["id"].(string)
+		if !m.campaignSelected(campaignID, gameName) {
+			continue
+		}
 		drops, _ := mapSlice(c["timeBasedDrops"])
 		for _, rd := range drops {
 			d := mapData(rd)
@@ -319,6 +326,26 @@ func (m *Miner) inventory(ctx context.Context) {
 	m.active = next
 	m.mu.Unlock()
 	m.claimCompleted(ctx)
+}
+
+// campaignSelected отсекает кампании, не выбранные в панели.
+func (m *Miner) campaignSelected(campaignID, gameName string) bool {
+	cfg := m.config()
+	if len(cfg.CampaignIDs) == 0 && len(cfg.CampaignGames) == 0 {
+		return true
+	}
+	for _, id := range cfg.CampaignIDs {
+		if id != "" && id == campaignID {
+			return true
+		}
+	}
+	name := strings.ToLower(gameName)
+	for _, game := range cfg.CampaignGames {
+		if game != "" && game == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Miner) hasEarnableGame(gameID string) bool {
@@ -360,6 +387,66 @@ func (m *Miner) claimCompleted(ctx context.Context) {
 		}
 	}
 }
+
+// claimPending забирает все готовые награды из инвентаря при старте фарма,
+// включая дропы завершившихся кампаний, которые inventory отсеивает по датам.
+func (m *Miner) claimPending(ctx context.Context) {
+	op := map[string]any{"operationName": "Inventory", "variables": map[string]any{"fetchRewardCampaigns": false}, "extensions": map[string]any{"persistedQuery": map[string]any{"version": 1, "sha256Hash": inventoryHash}}}
+	res, err := m.gql(ctx, op)
+	if err != nil {
+		logEvent(m.account.Login, "warn", "не удалось проверить готовые к клейму дропы", m.emit)
+		return
+	}
+	inv := mapData(mapData(mapData(res["data"])["currentUser"])["inventory"])
+	campaigns, _ := mapSlice(inv["dropCampaignsInProgress"])
+	type pending struct{ id, name string }
+	var todo []pending
+	for _, raw := range campaigns {
+		drops, _ := mapSlice(mapData(raw)["timeBasedDrops"])
+		for _, rd := range drops {
+			d := mapData(rd)
+			self := mapData(d["self"])
+			cid, _ := self["dropInstanceID"].(string)
+			claimed, _ := self["isClaimed"].(bool)
+			if cid == "" || claimed {
+				continue
+			}
+			if intNum(self["currentMinutesWatched"]) < intNum(d["requiredMinutesWatched"]) {
+				continue
+			}
+			m.mu.RLock()
+			done := m.claimed[cid]
+			m.mu.RUnlock()
+			if done {
+				continue
+			}
+			name, _ := d["name"].(string)
+			todo = append(todo, pending{cid, name})
+		}
+	}
+	if len(todo) == 0 {
+		logEvent(m.account.Login, "info", "готовых к клейму дропов нет", m.emit)
+		return
+	}
+	logEvent(m.account.Login, "info", fmt.Sprintf("готовых к клейму дропов: %d, забираю", len(todo)), m.emit)
+	for _, p := range todo {
+		op := map[string]any{"operationName": "DropsPage_ClaimDropRewards", "variables": map[string]any{"input": map[string]any{"dropInstanceID": p.id}}, "extensions": map[string]any{"persistedQuery": map[string]any{"version": 1, "sha256Hash": claimHash}}}
+		res, err := m.gql(ctx, op)
+		if err != nil {
+			continue
+		}
+		status, _ := mapData(mapData(res["data"])["claimDropRewards"])["status"].(string)
+		if status == "ELIGIBLE_FOR_ALL" || status == "DROP_INSTANCE_ALREADY_CLAIMED" {
+			m.mu.Lock()
+			m.claimed[p.id] = true
+			m.mu.Unlock()
+			logEvent(m.account.Login, "info", "дроп заклеймлен: "+p.name, m.emit)
+		} else {
+			logEvent(m.account.Login, "warn", "не удалось забрать дроп "+p.name+": Twitch отклонил клейм", m.emit)
+		}
+	}
+}
+
 func (m *Miner) streamInfo(ctx context.Context, login string) (*Channel, error) {
 	op := map[string]any{"operationName": "VideoPlayerStreamInfoOverlayChannel", "variables": map[string]any{"channel": login}, "extensions": map[string]any{"persistedQuery": map[string]any{"version": 1, "sha256Hash": streamHash}}}
 	res, err := m.gql(ctx, op)
@@ -708,6 +795,7 @@ func (m *Miner) run(ctx context.Context) {
 	}
 	go m.pubsubLoop(ctx)
 	m.inventory(ctx)
+	m.claimPending(ctx)
 	idx := 0
 	for m.isRunning() {
 		if len(m.streamers) == 0 {

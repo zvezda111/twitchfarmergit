@@ -62,6 +62,15 @@ class TwitchMiner:
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/131.0.0.0 Safari/537.36"
     )
+    # Twitch убрал data-a-target у подписи кнопки, поэтому ищем по тексту
+    CLAIM_BUTTON_SELECTOR = (
+        'button:has-text("Получить сейчас"), '
+        'button:has-text("Claim Now"), '
+        'button:has(div[data-a-target="tw-core-button-label-text"]'
+        ':has-text("Claim"))'
+    )
+    # сколько раз перезагружать инвентарь после отказа Twitch по integrity
+    CLAIM_MAX_RETRIES = 4
 
     def __init__(
         self,
@@ -448,6 +457,17 @@ class TwitchMiner:
             if os.path.exists(temp_file):
                 os.remove(temp_file)
 
+    def _campaign_selected(self, campaign: Campaign) -> bool:
+        """Фармим только кампании, выбранные в панели (если выбор задан)."""
+        ids = self.config.campaign_ids
+        games = self.config.campaign_games
+        if not ids and not games:
+            return True
+        if campaign.id in ids:
+            return True
+        game_name = campaign.game.name if campaign.game else ""
+        return game_name.lower() in games
+
     async def fetch_inventory(self):        
         operation = {
             "operationName": "Inventory",
@@ -481,6 +501,8 @@ class TwitchMiner:
                     campaign = Campaign.from_data(campaign_data)
                     
                     if campaign_data.get("status") == "EXPIRED":
+                        continue
+                    if not self._campaign_selected(campaign):
                         continue
                     if campaign.ends_at < now:
                         continue
@@ -554,8 +576,8 @@ class TwitchMiner:
     async def _claim_completed(self) -> None:
         """Клеймит завершённые дропы (иначе они висят на 100% без награды).
 
-        Сначала используется API с Client-Id и User-Agent токена.
-        Для веб-токенов браузер остаётся запасным вариантом.
+        Мобильный токен клеймит запросами к API, веб-токен — только через
+        браузер: API-путь для веб-токена Twitch отклоняет по integrity.
         """
         claimable = [
             drop for drop in list(self.active_drops.values())
@@ -568,22 +590,119 @@ class TwitchMiner:
             for drop in claimable:
                 await self._claim_drop_api(drop)
         else:
-            remaining = []
-            for drop in claimable:
-                if not await self._claim_drop_api(drop):
-                    remaining.append(drop)
-            if remaining:
-                await self._claim_all_browser(remaining)
+            await self._claim_all_browser(claimable)
+
+    async def fetch_claimable_instances(self) -> list[tuple[str, str]]:
+        """Готовые к клейму дропы прямо из инвентаря: [(dropInstanceID, имя)].
+
+        В отличие от fetch_inventory не отсекает кампании по датам и не
+        смотрит на active_drops: награду можно забрать и после того, как
+        кампания закончилась.
+        """
+        operation = {
+            "operationName": "Inventory",
+            "variables": {"fetchRewardCampaigns": False},
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": "d86775d0ef16a63a33ad52e80eaff963b2d5b72fada7c991504a57496e1d8e4b"
+                }
+            }
+        }
+
+        instances: list[tuple[str, str]] = []
+        try:
+            data = await self._gql_request(operation)
+            user_data = (data.get("data") or {}).get("currentUser") or {}
+            inventory = user_data.get("inventory") or {}
+            for campaign_data in inventory.get("dropCampaignsInProgress") or []:
+                for time_drop in campaign_data.get("timeBasedDrops") or []:
+                    self_data = time_drop.get("self") or {}
+                    instance_id = self_data.get("dropInstanceID")
+                    if not instance_id or self_data.get("isClaimed"):
+                        continue
+                    if instance_id in self._claimed_instances:
+                        continue
+                    current = self_data.get("currentMinutesWatched") or 0
+                    required = time_drop.get("requiredMinutesWatched") or 0
+                    if current < required:
+                        continue
+                    instances.append(
+                        (instance_id, time_drop.get("name") or time_drop.get("id", ""))
+                    )
+        except Exception as e:
+            self._log(f"не удалось проверить готовые к клейму дропы: {e}")
+        return instances
+
+    async def claim_pending_rewards(self) -> int:
+        """Забирает всё, что уже готово к клейму. Возвращает число наград.
+
+        Вызывается при старте фарма: на аккаунте могут висеть дропы,
+        добитые в прошлый запуск и оставшиеся незаклеймленными.
+        """
+        instances = await self.fetch_claimable_instances()
+        if not instances:
+            self._log("готовых к клейму дропов нет")
+            return 0
+
+        self._log(f"готовых к клейму дропов: {len(instances)}, забираю")
+        if self.is_mobile:
+            claimed = set()
+            for instance_id, name in instances:
+                if await self._claim_instance_api(instance_id, name):
+                    claimed.add(instance_id)
+        else:
+            claimed = await self._claim_instances_browser(instances)
+
+        # неуспешные не помечаем как обработанные — попробуем ещё раз позже
+        for instance_id, name in instances:
+            if instance_id not in claimed:
+                self._log(f"не удалось забрать дроп {name}: Twitch отклонил клейм")
+        for drop in list(self.active_drops.values()):
+            if drop.claim_id and drop.claim_id in claimed:
+                drop.is_claimed = True
+                self.active_drops.pop(drop.id, None)
+
+        self._log(f"забрано наград: {len(claimed)} из {len(instances)}")
+        return len(claimed)
 
     async def _claim_all_browser(self, drops: list[Drop]) -> None:
         """Забирает все готовые дропы аккаунта за один запуск браузера."""
+        items = [(d.claim_id, d.name) for d in drops if d.claim_id]
+        claimed_ids = await self._claim_instances_browser(items)
+
+        for drop in drops:
+            if drop.claim_id and drop.claim_id in claimed_ids:
+                drop.is_claimed = True
+                self._claimed_instances.add(drop.claim_id)
+                self._log(f"дроп заклеймлен: {drop.name}")
+                if drop.id in self.active_drops:
+                    del self.active_drops[drop.id]
+            else:
+                self._log(
+                    f"не удалось забрать дроп {drop.name}: Twitch отклонил клейм"
+                )
+
+    async def _claim_instances_browser(
+        self, items: list[tuple[str, str]]
+    ) -> set[str]:
+        """Кликает «Получить сейчас» в /drops/inventory за один запуск браузера.
+
+        Возвращает dropInstanceID, которые Twitch подтвердил заклеймленными.
+        """
+        claimed_ids: set[str] = set()
+        if not items:
+            return claimed_ids
+
         async with _get_browser_semaphore():
             if not await self._init_browser():
-                for drop in drops:
-                    await self._claim_drop_api(drop)
-                return
+                self._log("браузер недоступен, клейм веб-токена невозможен")
+                return claimed_ids
 
-            claimed_ids: set[str] = set()
+            # Twitch часто отклоняет первый клейм по integrity и выдаёт рабочий
+            # токен только после этого, поэтому отказ = повод перезагрузиться
+            # и кликнуть ещё раз, а не считать дроп незабранным.
+            claim_events: list[bool] = []
 
             async def _on_response(resp):
                 if "gql.twitch.tv" not in resp.url:
@@ -592,8 +711,7 @@ class TwitchMiner:
                     body = await resp.json()
                 except Exception:
                     return
-                items = body if isinstance(body, list) else [body]
-                for item in items:
+                for item in (body if isinstance(body, list) else [body]):
                     if not isinstance(item, dict):
                         continue
                     ext = item.get("extensions") or {}
@@ -602,9 +720,11 @@ class TwitchMiner:
                     status = (
                         (item.get("data") or {}).get("claimDropRewards") or {}
                     ).get("status")
-                    if status not in (
+                    ok = status in (
                         "ELIGIBLE_FOR_ALL", "DROP_INSTANCE_ALREADY_CLAIMED"
-                    ):
+                    )
+                    claim_events.append(ok)
+                    if not ok:
                         continue
                     try:
                         post_data = resp.request.post_data
@@ -624,69 +744,72 @@ class TwitchMiner:
             self._browser_page.on("response", _on_response)
 
             try:
-                self._log(f"получаю награды: {len(drops)} шт.")
-                await self._browser_page.goto(
-                    'https://www.twitch.tv/drops/inventory')
-                await asyncio.sleep(5)
+                self._log(f"получаю награды: {len(items)} шт.")
+                await self._open_inventory_page()
 
-                try:
-                    consent = await self._browser_page.query_selector(
-                        'button[data-a-target="consent-banner-accept"]')
-                    if consent:
-                        await consent.click()
-                        await asyncio.sleep(2)
-                except Exception:
-                    pass
-
-                await self._browser_page.evaluate('window.scrollTo(0, 500)')
-                await asyncio.sleep(2)
-
-                # кликаем все кнопки «Получить сейчас», пока они есть
-                stale = 0
-                for _ in range(len(drops) + 3):
-                    buttons = await self._browser_page.query_selector_all(
-                        'button:has(div[data-a-target="tw-core-button-label-text"]'
-                        ':has-text("Получить сейчас"))')
-                    if not buttons:
-                        buttons = await self._browser_page.query_selector_all(
-                            'button:has(div[data-a-target="tw-core-button-label-text"]'
-                            ':has-text("Claim"))')
-                    if not buttons:
+                attempts = 0
+                max_attempts = len(items) + self.CLAIM_MAX_RETRIES
+                while attempts < max_attempts:
+                    attempts += 1
+                    buttons = self._browser_page.locator(self.CLAIM_BUTTON_SELECTOR)
+                    if not await buttons.count():
                         break
-                    before = len(buttons)
+                    seen = len(claim_events)
                     try:
-                        await buttons[0].scroll_into_view_if_needed()
-                        await buttons[0].click()
-                        await asyncio.sleep(5)
+                        await buttons.first.scroll_into_view_if_needed()
+                        await buttons.first.click()
                     except Exception:
                         break
-                    after = await self._browser_page.query_selector_all(
-                        'button:has(div[data-a-target="tw-core-button-label-text"]'
-                        ':has-text("Получить сейчас"))')
-                    if len(after) >= before:
-                        stale += 1
-                        if stale >= 2:
+
+                    # ждём ответ Twitch на этот клик
+                    ok = None
+                    for _ in range(20):
+                        await asyncio.sleep(1)
+                        if len(claim_events) > seen:
+                            ok = claim_events[-1]
                             break
-                    else:
-                        stale = 0
+                    if ok:
+                        continue
+
+                    # отказ (обычно integrity) или ответа не дождались —
+                    # перезагружаем страницу и пробуем снова
+                    self._log(
+                        "клейм отклонён, перезагружаю страницу и пробую снова"
+                    )
+                    await asyncio.sleep(5)
+                    await self._open_inventory_page()
             except Exception as e:
                 self._log(f"ошибка при получении наград: {e}")
             finally:
                 await self._close_browser()
 
-            for drop in drops:
-                if drop.claim_id and drop.claim_id in claimed_ids:
-                    drop.is_claimed = True
-                    self._claimed_instances.add(drop.claim_id)
-                    self._log(f"дроп заклеймлен: {drop.name}")
-                    if drop.id in self.active_drops:
-                        del self.active_drops[drop.id]
-                else:
-                    if drop.claim_id:
-                        self._claimed_instances.add(drop.claim_id)
-                    self._log(
-                        f"не удалось забрать дроп {drop.name}: Twitch отклонил клейм"
-                    )
+        return claimed_ids
+
+    async def _open_inventory_page(self) -> None:
+        """Открывает страницу инвентаря и убирает перекрывающие баннеры."""
+        await self._browser_page.goto('https://www.twitch.tv/drops/inventory')
+        await asyncio.sleep(8)
+        await self._dismiss_overlays()
+        await self._browser_page.evaluate('window.scrollTo(0, 500)')
+        await asyncio.sleep(2)
+
+    async def _dismiss_overlays(self) -> None:
+        """Закрывает баннеры Twitch, перекрывающие кнопки клейма."""
+        labels = (
+            'button[data-a-target="consent-banner-accept"]',
+            'button:has-text("Not Now")',
+            'button:has-text("Не сейчас")',
+            'button:has-text("Accept")',
+            'button:has-text("Принять")',
+        )
+        for selector in labels:
+            try:
+                element = self._browser_page.locator(selector).first
+                if await element.count():
+                    await element.click(timeout=3000)
+                    await asyncio.sleep(1)
+            except Exception:
+                pass
 
     async def watch_stream(self, channel: Channel):
         self.watching_channel = channel
@@ -1009,105 +1132,26 @@ class TwitchMiner:
 
         self._log(f"получаю награду: {drop.name}")
 
-        if await self._claim_drop_api(drop):
-            return True
         if self.is_mobile:
-            return False
+            return await self._claim_drop_api(drop)
 
-        # семафор: не поднимаем слишком много браузеров одновременно на сервере
-        async with _get_browser_semaphore():
-            if not await self._init_browser():
-                return await self._claim_drop_api(drop)
-
-            # отслеживаем реальный ответ Twitch на клейм — клик по кнопке
-            # может «пройти» визуально, но Twitch отклонит его по integrity
-            claim_result: dict = {}
-
-            async def _on_response(resp):
-                if "gql.twitch.tv" not in resp.url:
-                    return
-                try:
-                    body = await resp.json()
-                except Exception:
-                    return
-                items = body if isinstance(body, list) else [body]
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    ext = item.get("extensions") or {}
-                    if ext.get("operationName") != "DropsPage_ClaimDropRewards":
-                        continue
-                    if item.get("errors"):
-                        claim_result["error"] = item["errors"]
-                    status = (
-                        (item.get("data") or {}).get("claimDropRewards") or {}
-                    ).get("status")
-                    if status:
-                        claim_result["status"] = status
-
-            self._browser_page.on("response", _on_response)
-
-            try:
-                await self._browser_page.goto('https://www.twitch.tv/drops/inventory')
-                await asyncio.sleep(5)
-
-                # закрываем баннер согласия на cookie — иначе он перекрывает клейм
-                try:
-                    consent = await self._browser_page.query_selector(
-                        'button[data-a-target="consent-banner-accept"]')
-                    if consent:
-                        await consent.click()
-                        await asyncio.sleep(2)
-                except Exception:
-                    pass
-
-                await self._browser_page.evaluate('window.scrollTo(0, 600)')
-                await asyncio.sleep(3)
-
-                button = await self._browser_page.query_selector(
-                    'button:has(div[data-a-target="tw-core-button-label-text"]:has-text("Получить сейчас"))')
-
-                if not button:
-                    button = await self._browser_page.query_selector(
-                        'button:has(div[data-a-target="tw-core-button-label-text"]:has-text("Claim"))')
-
-                if button:
-                    await button.click()
-                    await asyncio.sleep(6)
-
-                    if claim_result.get("status") in (
-                        "ELIGIBLE_FOR_ALL", "DROP_INSTANCE_ALREADY_CLAIMED"
-                    ):
-                        drop.is_claimed = True
-                        if drop.claim_id:
-                            self._claimed_instances.add(drop.claim_id)
-                        self._log(f"дроп заклеймлен: {drop.name}")
-                        if drop.id in self.active_drops:
-                            del self.active_drops[drop.id]
-                        await self._close_browser()
-                        return True
-
-                    # клейм отклонён Twitch (обычно integrity для веб-токена) —
-                    # не врём в лог, помечаем инстанс, чтобы не долбить в цикле
-                    if drop.claim_id:
-                        self._claimed_instances.add(drop.claim_id)
-                    self._log(
-                        f"не удалось забрать дроп {drop.name}: "
-                        "веб-токен, Twitch требует integrity (нужен мобильный токен)"
-                    )
-                    await self._close_browser()
-                    return False
-
-                await self._close_browser()
-                return False
-            except:
-                await self._close_browser()
-                return False
+        await self._claim_all_browser([drop])
+        return drop.is_claimed
 
     async def _claim_drop_api(self, drop: Drop) -> bool:
+        if not await self._claim_instance_api(drop.claim_id, drop.name):
+            return False
+        drop.is_claimed = True
+        self.active_drops.pop(drop.id, None)
+        return True
+
+    async def _claim_instance_api(self, instance_id: str, name: str) -> bool:
+        """Клейм через GQL — работает только для мобильных токенов."""
+        if not instance_id:
+            return False
         operation = {
             "operationName": "DropsPage_ClaimDropRewards",
-            "variables": {"input": {"dropInstanceID": drop.claim_id}},
+            "variables": {"input": {"dropInstanceID": instance_id}},
             "extensions": {
                 "persistedQuery": {
                     "version": 1,
@@ -1123,21 +1167,17 @@ class TwitchMiner:
             data = result.get("data", {})
             claim_result = data.get("claimDropRewards")
             if not claim_result:
-                self._log(f"клейм (API) без результата для {drop.name}: {result}")
+                self._log(f"клейм (API) без результата для {name}: {result}")
                 return False
 
             status = claim_result.get("status")
             if status in ("ELIGIBLE_FOR_ALL", "DROP_INSTANCE_ALREADY_CLAIMED"):
-                drop.is_claimed = True
-                if drop.claim_id:
-                    self._claimed_instances.add(drop.claim_id)
-                self._log(f"дроп заклеймлен: {drop.name}")
-                if drop.id in self.active_drops:
-                    del self.active_drops[drop.id]
+                self._claimed_instances.add(instance_id)
+                self._log(f"дроп заклеймлен: {name}")
                 return True
-            self._log(f"клейм (API) не выполнен для {drop.name}: status={status}")
+            self._log(f"клейм (API) не выполнен для {name}: status={status}")
         except Exception as e:
-            self._log(f"клейм (API) ошибка для {drop.name}: {e}")
+            self._log(f"клейм (API) ошибка для {name}: {e}")
         return False
 
     async def check_streamer_online(
@@ -1315,8 +1355,9 @@ class TwitchMiner:
         if not self.running:
             return
         await self.fetch_inventory()
-        # первый запуск: забираем уже готовые дропы
-        await self._claim_completed()
+        # старт фарма: проверяем инвентарь и забираем всё, что уже готово,
+        # включая дропы из завершившихся кампаний
+        await self.claim_pending_rewards()
 
         if not self.active_drops:
             await self._handle_no_active_drops()
