@@ -69,8 +69,11 @@ class TwitchMiner:
         'button:has(div[data-a-target="tw-core-button-label-text"]'
         ':has-text("Claim"))'
     )
-    # сколько раз перезагружать инвентарь после отказа Twitch по integrity
+    # сколько раз перезагружать инвентарь, если клейм так и не прошёл
     CLAIM_MAX_RETRIES = 4
+    # сколько ждать успешный ответ после клика (Twitch сам повторяет запрос
+    # после отказа по integrity)
+    CLAIM_WAIT_SECONDS = 60
 
     def __init__(
         self,
@@ -761,20 +764,19 @@ class TwitchMiner:
                     except Exception:
                         break
 
-                    # ждём ответ Twitch на этот клик
-                    ok = None
-                    for _ in range(20):
+                    # После отказа по integrity страница Twitch сама повторяет
+                    # запрос, поэтому ждём успешный ответ и не трогаем страницу.
+                    ok = False
+                    for _ in range(self.CLAIM_WAIT_SECONDS):
                         await asyncio.sleep(1)
-                        if len(claim_events) > seen:
-                            ok = claim_events[-1]
+                        if any(claim_events[seen:]):
+                            ok = True
                             break
                     if ok:
                         continue
 
-                    # отказ (обычно integrity) или ответа не дождались —
-                    # перезагружаем страницу и пробуем снова
                     self._log(
-                        "клейм отклонён, перезагружаю страницу и пробую снова"
+                        "клейм не прошёл, перезагружаю страницу и пробую снова"
                     )
                     await asyncio.sleep(5)
                     await self._open_inventory_page()
