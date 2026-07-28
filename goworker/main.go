@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -65,17 +66,29 @@ type Job struct {
 	Stagger   float64   `json:"stagger"`
 }
 type Event struct {
-	Type         string  `json:"type"`
-	Login        string  `json:"login,omitempty"`
-	Level        string  `json:"level,omitempty"`
-	Message      string  `json:"message,omitempty"`
-	CurrentGame  *string `json:"current_game"`
-	WatchMinutes int     `json:"watch_minutes"`
+	Type         string        `json:"type"`
+	Login        string        `json:"login,omitempty"`
+	Level        string        `json:"level,omitempty"`
+	Message      string        `json:"message,omitempty"`
+	CurrentGame  *string       `json:"current_game"`
+	WatchMinutes int           `json:"watch_minutes"`
+	Progress     []ProgressRow `json:"progress,omitempty"`
+}
+type ProgressRow struct {
+	Campaign string `json:"campaign"`
+	Drop     string `json:"drop"`
+	GameID   string `json:"game_id"`
+	GameName string `json:"game_name"`
+	Current  int    `json:"current"`
+	Required int    `json:"required"`
+	Status   string `json:"status"`
 }
 type Drop struct {
 	ID       string
 	Name     string
 	GameID   string
+	GameName string
+	Campaign string
 	Required int
 	Current  int
 	Claimed  bool
@@ -84,6 +97,15 @@ type Drop struct {
 
 func (d *Drop) CanEarn() bool  { return !d.Claimed && d.Current < d.Required }
 func (d *Drop) CanClaim() bool { return !d.Claimed && d.Current >= d.Required && d.ClaimID != "" }
+func (d *Drop) Status() string {
+	if d.Claimed {
+		return "claimed"
+	}
+	if d.ClaimID != "" {
+		return "ready"
+	}
+	return "in_progress"
+}
 
 type Game struct {
 	ID   string
@@ -116,6 +138,7 @@ type Miner struct {
 	proxy        *Proxy
 	pubsub       *websocket.Conn
 	emit         func(Event)
+	lastProg     string
 	mu           sync.RWMutex
 }
 
@@ -272,7 +295,10 @@ func (m *Miner) inventory(ctx context.Context) {
 		if t, ok := parseTime(c["startAt"]); ok && t.After(now.Add(24*time.Hour)) {
 			continue
 		}
-		gameID, _ := mapData(c["game"])["id"].(string)
+		campaignName, _ := c["name"].(string)
+		game := mapData(c["game"])
+		gameID, _ := game["id"].(string)
+		gameName, _ := game["name"].(string)
 		drops, _ := mapSlice(c["timeBasedDrops"])
 		for _, rd := range drops {
 			d := mapData(rd)
@@ -283,7 +309,7 @@ func (m *Miner) inventory(ctx context.Context) {
 			cur := intNum(self["currentMinutesWatched"])
 			claimed, _ := self["isClaimed"].(bool)
 			cid, _ := self["dropInstanceID"].(string)
-			drop := &Drop{ID: id, Name: name, GameID: gameID, Required: req, Current: cur, Claimed: claimed, ClaimID: cid}
+			drop := &Drop{ID: id, Name: name, GameID: gameID, GameName: gameName, Campaign: campaignName, Required: req, Current: cur, Claimed: claimed, ClaimID: cid}
 			if (drop.CanEarn() || drop.CanClaim()) && !m.claimed[cid] {
 				next[id] = drop
 			}
@@ -410,14 +436,6 @@ func (m *Miner) watch(ctx context.Context, ch *Channel) {
 	last := time.Now()
 	snap := m.snapshot()
 	for m.isRunning() {
-		if ch.Game == nil || ch.Game.ID == "" {
-			logEvent(m.account.Login, "info", "у стримера не определена игра, просмотр остановлен", m.emit)
-			break
-		}
-		if !m.hasEarnableGame(ch.Game.ID) {
-			logEvent(m.account.Login, "info", "у стримера нет подходящих доступных дропов, просмотр остановлен", m.emit)
-			break
-		}
 		if m.watchMinutes > 0 && m.watchMinutes%15 == 0 {
 			if fresh, _ := m.streamInfo(ctx, ch.Login); fresh != nil && fresh.ID != bid {
 				bid = fresh.ID
@@ -468,6 +486,32 @@ func (m *Miner) snapshot() map[string]int {
 		}
 	}
 	return r
+}
+func (m *Miner) progressRows() []ProgressRow {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	rows := make([]ProgressRow, 0, len(m.active))
+	for _, d := range m.active {
+		rows = append(rows, ProgressRow{
+			Campaign: d.Campaign,
+			Drop:     d.Name,
+			GameID:   d.GameID,
+			GameName: d.GameName,
+			Current:  d.Current,
+			Required: d.Required,
+			Status:   d.Status(),
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].GameID != rows[j].GameID {
+			return rows[i].GameID < rows[j].GameID
+		}
+		if rows[i].Campaign != rows[j].Campaign {
+			return rows[i].Campaign < rows[j].Campaign
+		}
+		return rows[i].Drop < rows[j].Drop
+	})
+	return rows
 }
 func advanced(a, b map[string]int) bool {
 	if len(b) < len(a) {
@@ -666,20 +710,7 @@ func (m *Miner) run(ctx context.Context) {
 	m.inventory(ctx)
 	idx := 0
 	for m.isRunning() {
-		m.mu.RLock()
-		has := false
-		hasActive := len(m.active) > 0
-		for _, d := range m.active {
-			if d.CanEarn() {
-				has = true
-				break
-			}
-		}
-		m.mu.RUnlock()
-		if !has || len(m.streamers) == 0 {
-			if hasActive {
-				logEvent(m.account.Login, "info", "подходящих дропов нет, жду обновления данных", m.emit)
-			}
+		if len(m.streamers) == 0 {
 			time.Sleep(time.Duration(max(1, m.config().OfflineCheckInterval)) * time.Second)
 			m.inventory(ctx)
 			continue
@@ -692,19 +723,15 @@ func (m *Miner) run(ctx context.Context) {
 			}
 			s := m.streamers[(idx+n)%len(m.streamers)]
 			ch, _ := m.streamInfo(ctx, s)
-			if ch != nil && ch.Game != nil && ch.Game.ID != "" &&
-				m.hasEarnableGame(ch.Game.ID) {
+			if ch != nil {
 				idx = (idx + n + 1) % len(m.streamers)
 				m.watch(ctx, ch)
 				found = true
 				break
 			}
-			if ch != nil {
-				logEvent(m.account.Login, "info", "стример "+ch.Name+" играет в игру без доступных дропов, пропускаю", m.emit)
-			}
 		}
 		if !found {
-			logEvent(m.account.Login, "info", fmt.Sprintf("подходящих по игре онлайн-стримеров нет, жду %d секунд", max(1, m.config().OfflineCheckInterval)), m.emit)
+			logEvent(m.account.Login, "info", fmt.Sprintf("онлайн-стримеров из кампании нет, жду %d секунд", max(1, m.config().OfflineCheckInterval)), m.emit)
 			time.Sleep(time.Duration(max(1, m.config().OfflineCheckInterval)) * time.Second)
 			idx = 0
 		}
@@ -764,6 +791,15 @@ func publisher(ctx context.Context, miners []*Miner) {
 				login := m.account.Login
 				m.mu.RUnlock()
 				m.emit(Event{Type: "card", Login: login, CurrentGame: g, WatchMinutes: w})
+				rows := m.progressRows()
+				if len(rows) > 0 {
+					if b, err := json.Marshal(rows); err == nil {
+						if key := string(b); key != m.lastProg {
+							m.lastProg = key
+							m.emit(Event{Type: "progress", Login: login, Progress: rows})
+						}
+					}
+				}
 			}
 		}
 	}
