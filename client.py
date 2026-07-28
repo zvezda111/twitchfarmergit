@@ -69,6 +69,8 @@ class TwitchMiner:
         'button:has(div[data-a-target="tw-core-button-label-text"]'
         ':has-text("Claim"))'
     )
+    # сколько раз перезагружать инвентарь после отказа Twitch по integrity
+    CLAIM_MAX_RETRIES = 4
 
     def __init__(
         self,
@@ -455,6 +457,17 @@ class TwitchMiner:
             if os.path.exists(temp_file):
                 os.remove(temp_file)
 
+    def _campaign_selected(self, campaign: Campaign) -> bool:
+        """Фармим только кампании, выбранные в панели (если выбор задан)."""
+        ids = self.config.campaign_ids
+        games = self.config.campaign_games
+        if not ids and not games:
+            return True
+        if campaign.id in ids:
+            return True
+        game_name = campaign.game.name if campaign.game else ""
+        return game_name.lower() in games
+
     async def fetch_inventory(self):        
         operation = {
             "operationName": "Inventory",
@@ -488,6 +501,8 @@ class TwitchMiner:
                     campaign = Campaign.from_data(campaign_data)
                     
                     if campaign_data.get("status") == "EXPIRED":
+                        continue
+                    if not self._campaign_selected(campaign):
                         continue
                     if campaign.ends_at < now:
                         continue
@@ -608,6 +623,10 @@ class TwitchMiner:
                         continue
                     if instance_id in self._claimed_instances:
                         continue
+                    current = self_data.get("currentMinutesWatched") or 0
+                    required = time_drop.get("requiredMinutesWatched") or 0
+                    if current < required:
+                        continue
                     instances.append(
                         (instance_id, time_drop.get("name") or time_drop.get("id", ""))
                     )
@@ -635,8 +654,8 @@ class TwitchMiner:
         else:
             claimed = await self._claim_instances_browser(instances)
 
+        # неуспешные не помечаем как обработанные — попробуем ещё раз позже
         for instance_id, name in instances:
-            self._claimed_instances.add(instance_id)
             if instance_id not in claimed:
                 self._log(f"не удалось забрать дроп {name}: Twitch отклонил клейм")
         for drop in list(self.active_drops.values()):
@@ -660,8 +679,6 @@ class TwitchMiner:
                 if drop.id in self.active_drops:
                     del self.active_drops[drop.id]
             else:
-                if drop.claim_id:
-                    self._claimed_instances.add(drop.claim_id)
                 self._log(
                     f"не удалось забрать дроп {drop.name}: Twitch отклонил клейм"
                 )
@@ -682,10 +699,12 @@ class TwitchMiner:
                 self._log("браузер недоступен, клейм веб-токена невозможен")
                 return claimed_ids
 
-            integrity_failed = False
+            # Twitch часто отклоняет первый клейм по integrity и выдаёт рабочий
+            # токен только после этого, поэтому отказ = повод перезагрузиться
+            # и кликнуть ещё раз, а не считать дроп незабранным.
+            claim_events: list[bool] = []
 
             async def _on_response(resp):
-                nonlocal integrity_failed
                 if "gql.twitch.tv" not in resp.url:
                     return
                 try:
@@ -698,16 +717,14 @@ class TwitchMiner:
                     ext = item.get("extensions") or {}
                     if ext.get("operationName") != "DropsPage_ClaimDropRewards":
                         continue
-                    for error in item.get("errors") or []:
-                        code = (error.get("extensions") or {}).get("code")
-                        if code == "IntegrityCheckFailed":
-                            integrity_failed = True
                     status = (
                         (item.get("data") or {}).get("claimDropRewards") or {}
                     ).get("status")
-                    if status not in (
+                    ok = status in (
                         "ELIGIBLE_FOR_ALL", "DROP_INSTANCE_ALREADY_CLAIMED"
-                    ):
+                    )
+                    claim_events.append(ok)
+                    if not ok:
                         continue
                     try:
                         post_data = resp.request.post_data
@@ -728,44 +745,53 @@ class TwitchMiner:
 
             try:
                 self._log(f"получаю награды: {len(items)} шт.")
-                await self._browser_page.goto(
-                    'https://www.twitch.tv/drops/inventory')
-                await asyncio.sleep(8)
-                await self._dismiss_overlays()
+                await self._open_inventory_page()
 
-                await self._browser_page.evaluate('window.scrollTo(0, 500)')
-                await asyncio.sleep(2)
-
-                # кликаем все кнопки клейма, пока они есть
-                stale = 0
-                for _ in range(len(items) + 3):
+                attempts = 0
+                max_attempts = len(items) + self.CLAIM_MAX_RETRIES
+                while attempts < max_attempts:
+                    attempts += 1
                     buttons = self._browser_page.locator(self.CLAIM_BUTTON_SELECTOR)
-                    before = await buttons.count()
-                    if not before:
+                    if not await buttons.count():
                         break
+                    seen = len(claim_events)
                     try:
                         await buttons.first.scroll_into_view_if_needed()
                         await buttons.first.click()
-                        await asyncio.sleep(5)
                     except Exception:
                         break
-                    if await buttons.count() >= before:
-                        stale += 1
-                        if stale >= 2:
+
+                    # ждём ответ Twitch на этот клик
+                    ok = None
+                    for _ in range(20):
+                        await asyncio.sleep(1)
+                        if len(claim_events) > seen:
+                            ok = claim_events[-1]
                             break
-                    else:
-                        stale = 0
-                if integrity_failed:
+                    if ok:
+                        continue
+
+                    # отказ (обычно integrity) или ответа не дождались —
+                    # перезагружаем страницу и пробуем снова
                     self._log(
-                        "Twitch отклонил клейм по integrity — веб-токену нужен "
-                        "перевод в мобильный (конвертер токенов)"
+                        "клейм отклонён, перезагружаю страницу и пробую снова"
                     )
+                    await asyncio.sleep(5)
+                    await self._open_inventory_page()
             except Exception as e:
                 self._log(f"ошибка при получении наград: {e}")
             finally:
                 await self._close_browser()
 
         return claimed_ids
+
+    async def _open_inventory_page(self) -> None:
+        """Открывает страницу инвентаря и убирает перекрывающие баннеры."""
+        await self._browser_page.goto('https://www.twitch.tv/drops/inventory')
+        await asyncio.sleep(8)
+        await self._dismiss_overlays()
+        await self._browser_page.evaluate('window.scrollTo(0, 500)')
+        await asyncio.sleep(2)
 
     async def _dismiss_overlays(self) -> None:
         """Закрывает баннеры Twitch, перекрывающие кнопки клейма."""

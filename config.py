@@ -24,6 +24,9 @@ class MinerConfig:
         self.offline_check_interval = 120
         self.proxy: Optional[str] = None
         self.streamers: list[str] = []
+        # фарм ограничен выбранными кампаниями; пусто = без ограничения
+        self.campaign_ids: list[str] = []
+        self.campaign_games: list[str] = []
         self.all_tokens: list[str] = tokens
         self.auth_token = self.all_tokens[0] if self.all_tokens else ""
         self._load_streamers()

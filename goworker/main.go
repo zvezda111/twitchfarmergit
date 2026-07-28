@@ -56,6 +56,9 @@ type Config struct {
 	InventoryRefresh      int `json:"inventory_refresh"`
 	InventoryCheckMinutes int `json:"inventory_check_minutes"`
 	OfflineCheckInterval  int `json:"offline_check_interval"`
+	// фарм ограничен выбранными кампаниями; пусто = без ограничения
+	CampaignIDs   []string `json:"campaign_ids"`
+	CampaignGames []string `json:"campaign_games"`
 }
 type Job struct {
 	OwnerID   int       `json:"owner_id"`
@@ -299,6 +302,10 @@ func (m *Miner) inventory(ctx context.Context) {
 		game := mapData(c["game"])
 		gameID, _ := game["id"].(string)
 		gameName, _ := game["name"].(string)
+		campaignID, _ := c["id"].(string)
+		if !m.campaignSelected(campaignID, gameName) {
+			continue
+		}
 		drops, _ := mapSlice(c["timeBasedDrops"])
 		for _, rd := range drops {
 			d := mapData(rd)
@@ -319,6 +326,26 @@ func (m *Miner) inventory(ctx context.Context) {
 	m.active = next
 	m.mu.Unlock()
 	m.claimCompleted(ctx)
+}
+
+// campaignSelected отсекает кампании, не выбранные в панели.
+func (m *Miner) campaignSelected(campaignID, gameName string) bool {
+	cfg := m.config()
+	if len(cfg.CampaignIDs) == 0 && len(cfg.CampaignGames) == 0 {
+		return true
+	}
+	for _, id := range cfg.CampaignIDs {
+		if id != "" && id == campaignID {
+			return true
+		}
+	}
+	name := strings.ToLower(gameName)
+	for _, game := range cfg.CampaignGames {
+		if game != "" && game == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Miner) hasEarnableGame(gameID string) bool {
@@ -382,6 +409,9 @@ func (m *Miner) claimPending(ctx context.Context) {
 			cid, _ := self["dropInstanceID"].(string)
 			claimed, _ := self["isClaimed"].(bool)
 			if cid == "" || claimed {
+				continue
+			}
+			if intNum(self["currentMinutesWatched"]) < intNum(d["requiredMinutesWatched"]) {
 				continue
 			}
 			m.mu.RLock()
